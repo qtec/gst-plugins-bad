@@ -139,6 +139,8 @@ struct _GstAggregator
   /* Only access with the object lock held */
   GstSegment               segment;
 
+  gboolean non_live;
+
   /*< private >*/
   GstAggregatorPrivate  *  priv;
 
