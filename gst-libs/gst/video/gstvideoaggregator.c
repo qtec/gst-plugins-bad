@@ -410,6 +410,11 @@ gst_video_aggregator_child_proxy_init (gpointer g_iface, gpointer iface_data)
         g_thread_self());                                      \
   } G_STMT_END
 
+enum
+{
+  PROP_0,
+  PROP_CHECK_TIMESTAMPS
+};
 
 struct _GstVideoAggregatorPrivate
 {
@@ -1061,6 +1066,16 @@ gst_video_aggregator_read_qos (GstVideoAggregator * vagg, gdouble * proportion,
   GST_OBJECT_UNLOCK (vagg);
 }
 
+void
+gst_videoaggregator_reset_position (GstVideoAggregator * vagg,
+    GstClockTime newPos)
+{
+  GstAggregator *agg = GST_AGGREGATOR (vagg);
+
+  vagg->priv->nframes = 0;
+  agg->segment.position = newPos;
+}
+
 static void
 gst_video_aggregator_reset (GstVideoAggregator * vagg)
 {
@@ -1281,6 +1296,123 @@ gst_video_aggregator_fill_queues (GstVideoAggregator * vagg,
     return GST_FLOW_NEEDS_DATA;
   if (eos)
     return GST_FLOW_EOS;
+
+  return GST_FLOW_OK;
+}
+
+static gint
+gst_videoaggregator_fill_queues_and_check_timestamps (GstVideoAggregator * vagg)
+{
+  GList *l;
+  GstClockTime buffer_timestamps[10];
+  GstClockTime highest_timestamp = GST_CLOCK_TIME_NONE;
+  GstClockTime lowest_timestamp = GST_CLOCK_TIME_NONE;
+  int buffer_nr = 0;
+
+  //check the timestamp delay
+  GstClockTime timeNow =
+      gst_util_get_timestamp () - GST_ELEMENT (vagg)->base_time;
+
+  GST_OBJECT_LOCK (vagg);
+  //get timestamps of the buffers on all pads
+  for (l = GST_ELEMENT (vagg)->sinkpads; l; l = l->next) {
+    GstVideoAggregatorPad *pad = l->data;
+    GstAggregatorPad *bpad;
+    GstBuffer *buf;
+
+    bpad = GST_AGGREGATOR_PAD (pad);
+    if (gst_aggregator_pad_is_eos (bpad)) {
+      GST_OBJECT_UNLOCK (vagg);
+      return GST_FLOW_EOS;
+    }
+    buf = gst_aggregator_pad_get_buffer (bpad);
+    if (buf) {
+      buffer_timestamps[buffer_nr] = GST_BUFFER_TIMESTAMP (buf);
+      if (buffer_timestamps[buffer_nr] == -1) {
+        gst_buffer_unref (buf);
+        GST_DEBUG_OBJECT (pad, "Need timestamped buffers!");
+        GST_OBJECT_UNLOCK (vagg);
+        return GST_FLOW_ERROR;
+      }
+
+      if (highest_timestamp == GST_CLOCK_TIME_NONE
+          || GST_BUFFER_TIMESTAMP (buf) > highest_timestamp)
+        highest_timestamp = GST_BUFFER_TIMESTAMP (buf);
+      if (lowest_timestamp == GST_CLOCK_TIME_NONE
+          || GST_BUFFER_TIMESTAMP (buf) < lowest_timestamp)
+        lowest_timestamp = GST_BUFFER_TIMESTAMP (buf);
+
+      gst_buffer_unref (buf);
+    } else {
+      GST_DEBUG_OBJECT (pad, "No buffer available!");
+      GST_OBJECT_UNLOCK (vagg);
+      return GST_FLOW_NEEDS_DATA;
+    }
+    buffer_nr++;
+  }
+  //verify the timestamps
+  if (highest_timestamp != lowest_timestamp) {
+    GST_WARNING_OBJECT (vagg,
+        "Timestamps dont match: max = %" GST_TIME_FORMAT
+        " min = %" GST_TIME_FORMAT,
+        GST_TIME_ARGS (highest_timestamp), GST_TIME_ARGS (lowest_timestamp));
+
+    //drop queued data to guarantee we don't get stuck
+    for (l = GST_ELEMENT (vagg)->sinkpads; l; l = l->next) {
+      GstVideoAggregatorPad *pad = l->data;
+      GstAggregatorPad *bpad;
+      GstBuffer *buf;
+
+      bpad = GST_AGGREGATOR_PAD (pad);
+      buf = gst_aggregator_pad_get_buffer (bpad);
+      if (buf) {
+        while (GST_BUFFER_TIMESTAMP (buf) < highest_timestamp) {
+          gst_buffer_unref (buf);
+          gst_aggregator_pad_drop_buffer (bpad);
+          buf = gst_aggregator_pad_get_buffer (bpad);
+          if (buf == NULL)
+            break;
+        }
+        if (buf != NULL)
+          gst_buffer_unref (buf);
+      }
+    }
+
+    GST_OBJECT_UNLOCK (vagg);
+    return GST_FLOW_NEEDS_DATA;
+  }
+  //copy buffers
+  for (l = GST_ELEMENT (vagg)->sinkpads; l; l = l->next) {
+    GstVideoAggregatorPad *pad = l->data;
+    GstAggregatorPad *bpad;
+    GstBuffer *buf;
+    GstVideoInfo *vinfo;
+
+    bpad = GST_AGGREGATOR_PAD (pad);
+    buf = gst_aggregator_pad_get_buffer (bpad);
+    if (buf) {
+      GstClockTime start_time = GST_BUFFER_TIMESTAMP (buf);
+      GstClockTime end_time = start_time + GST_BUFFER_DURATION (buf);
+
+      vinfo = &pad->info;
+
+      GST_DEBUG_OBJECT (pad,
+          "Taking new buffer with start time %" GST_TIME_FORMAT
+          " now = %" GST_TIME_FORMAT
+          " delay = %f ms",
+          GST_TIME_ARGS (start_time),
+          GST_TIME_ARGS (timeNow),
+          (timeNow - GST_BUFFER_TIMESTAMP (buf)) / 1000000.0);
+      gst_buffer_replace (&pad->buffer, buf);
+      pad->buffer_vinfo = *vinfo;
+      pad->priv->start_time = start_time;
+      pad->priv->end_time = end_time;
+
+      gst_buffer_unref (buf);
+      gst_aggregator_pad_drop_buffer (bpad);
+    }
+  }
+  GST_OBJECT_UNLOCK (vagg);
 
   return GST_FLOW_OK;
 }
@@ -1542,9 +1674,13 @@ gst_video_aggregator_aggregate (GstAggregator * agg, gboolean timeout)
   if (output_end_time == output_start_time) {
     flow_ret = GST_FLOW_EOS;
   } else {
-    flow_ret =
-        gst_video_aggregator_fill_queues (vagg, output_start_running_time,
-        output_end_running_time);
+    if (!vagg->check_timestamps)
+      flow_ret =
+          gst_videoaggregator_fill_queues (vagg, output_start_running_time,
+          output_end_running_time);
+    else
+      flow_ret = gst_videoaggregator_fill_queues_and_check_timestamps (vagg);
+
   }
 
   if (flow_ret == GST_FLOW_NEEDS_DATA && !timeout) {
@@ -1559,20 +1695,23 @@ gst_video_aggregator_aggregate (GstAggregator * agg, gboolean timeout)
     goto unlock_and_return;
   }
 
-  GST_DEBUG_OBJECT (vagg,
-      "Producing buffer for %" GST_TIME_FORMAT " to %" GST_TIME_FORMAT
-      ", running time start %" GST_TIME_FORMAT ", running time end %"
-      GST_TIME_FORMAT, GST_TIME_ARGS (output_start_time),
-      GST_TIME_ARGS (output_end_time),
-      GST_TIME_ARGS (output_start_running_time),
-      GST_TIME_ARGS (output_end_running_time));
-
   jitter = gst_video_aggregator_do_qos (vagg, output_start_time);
   if (jitter <= 0) {
     flow_ret = gst_video_aggregator_do_aggregate (vagg, output_start_time,
         output_end_time, &outbuf);
     if (flow_ret != GST_FLOW_OK)
       goto done;
+
+    if (!vagg->check_timestamps) {
+      GST_DEBUG_OBJECT (vagg,
+          "Producing buffer for %" GST_TIME_FORMAT " to %" GST_TIME_FORMAT
+          ", running time start %" GST_TIME_FORMAT ", running time end %"
+          GST_TIME_FORMAT, GST_TIME_ARGS (output_start_time),
+          GST_TIME_ARGS (output_end_time),
+          GST_TIME_ARGS (output_start_running_time),
+          GST_TIME_ARGS (output_end_running_time));
+    }
+
     vagg->priv->qos_processed++;
   } else {
     GstMessage *msg;
@@ -1603,8 +1742,17 @@ gst_video_aggregator_aggregate (GstAggregator * agg, gboolean timeout)
   }
 
   GST_VIDEO_AGGREGATOR_LOCK (vagg);
-  vagg->priv->nframes++;
-  agg->segment.position = output_end_time;
+  if (!vagg->check_timestamps) {
+    vagg->priv->nframes++;
+    agg->segment.position = output_end_time;
+  } else {
+    //if we are producing frames based only on the matching timestamps (and therefore dont care about the fps)
+    //we need to keep the nframes=0 and adjust the segment based on the produced frames instead
+    //otherwise the QOS management system starts complaining and dropping frames (if frames are not produced regularly, fx. a muxer after a stitcher)
+    gst_videoaggregator_reset_position (vagg,
+        GST_BUFFER_TIMESTAMP (outbuf) + GST_BUFFER_DURATION (outbuf));
+  }
+
   GST_VIDEO_AGGREGATOR_UNLOCK (vagg);
 
   return flow_ret;
@@ -1614,6 +1762,10 @@ done:
     gst_buffer_unref (outbuf);
 unlock_and_return:
   GST_VIDEO_AGGREGATOR_UNLOCK (vagg);
+
+  if (flow_ret == GST_FLOW_VIDEO_AGGREGATOR_DROP_FRAME)
+    flow_ret = GST_FLOW_OK;
+
   return flow_ret;
 }
 
@@ -2078,7 +2230,12 @@ static void
 gst_video_aggregator_get_property (GObject * object,
     guint prop_id, GValue * value, GParamSpec * pspec)
 {
+  GstVideoAggregator *vagg = GST_VIDEO_AGGREGATOR (object);
+
   switch (prop_id) {
+    case PROP_CHECK_TIMESTAMPS:
+      g_value_set_boolean (value, vagg->check_timestamps);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -2089,7 +2246,12 @@ static void
 gst_video_aggregator_set_property (GObject * object,
     guint prop_id, const GValue * value, GParamSpec * pspec)
 {
+  GstVideoAggregator *vagg = GST_VIDEO_AGGREGATOR (object);
+
   switch (prop_id) {
+    case PROP_CHECK_TIMESTAMPS:
+      vagg->check_timestamps = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -2137,6 +2299,11 @@ gst_video_aggregator_class_init (GstVideoAggregatorClass * klass)
   klass->get_output_buffer = gst_video_aggregator_get_output_buffer;
   klass->update_caps = gst_video_aggregator_default_update_caps;
   klass->fixate_caps = gst_video_aggregator_default_fixate_caps;
+
+  g_object_class_install_property (gobject_class, PROP_CHECK_TIMESTAMPS,
+      g_param_spec_boolean ("check-timestamps", "Check Timestamps",
+          "Checks that the timestamps from all sink pads match. Ignores the stream fps, will only output a new frame when they all match (won't duplicate any buffers).",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   /* Register the pad class */
   g_type_class_ref (GST_TYPE_VIDEO_AGGREGATOR_PAD);
@@ -2224,6 +2391,8 @@ gst_video_aggregator_init (GstVideoAggregator * vagg,
       GstVideoAggregatorPrivate);
 
   vagg->priv->current_caps = NULL;
+
+  vagg->check_timestamps = FALSE;
 
   g_mutex_init (&vagg->priv->lock);
 

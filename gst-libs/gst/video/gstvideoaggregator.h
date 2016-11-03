@@ -32,6 +32,8 @@
 
 G_BEGIN_DECLS
 
+#define GST_FLOW_VIDEO_AGGREGATOR_DROP_FRAME GST_FLOW_CUSTOM_SUCCESS
+
 #define GST_TYPE_VIDEO_AGGREGATOR (gst_video_aggregator_get_type())
 #define GST_VIDEO_AGGREGATOR(obj) \
         (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_VIDEO_AGGREGATOR, GstVideoAggregator))
@@ -62,6 +64,8 @@ struct _GstVideoAggregator
   /*< public >*/
   /* Output caps */
   GstVideoInfo info;
+
+  gboolean check_timestamps;
 
   /* < private > */
   GstVideoAggregatorPrivate *priv;
@@ -119,6 +123,9 @@ struct _GstVideoAggregatorClass
 };
 
 GType gst_video_aggregator_get_type       (void);
+
+void
+gst_videoaggregator_reset_position (GstVideoAggregator * vagg, GstClockTime newPos);
 
 G_END_DECLS
 #endif /* __GST_VIDEO_AGGREGATOR_H__ */
