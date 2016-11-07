@@ -1301,7 +1301,7 @@ gst_video_aggregator_fill_queues (GstVideoAggregator * vagg,
 }
 
 static gint
-gst_videoaggregator_fill_queues_and_check_timestamps (GstVideoAggregator * vagg)
+gst_video_aggregator_fill_queues_and_check_timestamps (GstVideoAggregator * vagg)
 {
   GList *l;
   GstClockTime buffer_timestamps[10];
@@ -1676,10 +1676,10 @@ gst_video_aggregator_aggregate (GstAggregator * agg, gboolean timeout)
   } else {
     if (!vagg->check_timestamps)
       flow_ret =
-          gst_videoaggregator_fill_queues (vagg, output_start_running_time,
+          gst_video_aggregator_fill_queues (vagg, output_start_running_time,
           output_end_running_time);
     else
-      flow_ret = gst_videoaggregator_fill_queues_and_check_timestamps (vagg);
+      flow_ret = gst_video_aggregator_fill_queues_and_check_timestamps (vagg);
 
   }
 
