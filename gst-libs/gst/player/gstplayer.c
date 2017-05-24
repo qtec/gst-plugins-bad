@@ -185,7 +185,7 @@ struct _GstPlayer
   gboolean seek_pending;        /* Only set from main context */
   GstClockTime last_seek_time;  /* Only set from main context */
   GSource *seek_source;
-  GstClockTime seek_position;
+  GstClockTime seek_position, seek_end_position;
   /* If TRUE, all signals are inhibited except the
    * state-changed:GST_PLAYER_STATE_STOPPED/PAUSED. This ensures that no signal
    * is emitted after gst_player_stop/pause() has been called by the user. */
@@ -291,6 +291,7 @@ gst_player_init (GstPlayer * self)
 
   self->seek_pending = FALSE;
   self->seek_position = GST_CLOCK_TIME_NONE;
+  self->seek_end_position = GST_CLOCK_TIME_NONE;
   self->last_seek_time = GST_CLOCK_TIME_NONE;
   self->inhibit_sigs = FALSE;
 
@@ -3287,7 +3288,7 @@ static void
 gst_player_seek_internal_locked (GstPlayer * self)
 {
   gboolean ret;
-  GstClockTime position;
+  GstClockTime position, end_position;
   gdouble rate;
   GstStateChangeReturn state_ret;
   GstEvent *s_event;
@@ -3318,7 +3319,9 @@ gst_player_seek_internal_locked (GstPlayer * self)
 
   self->last_seek_time = gst_util_get_timestamp ();
   position = self->seek_position;
+  end_position = self->seek_end_position;
   self->seek_position = GST_CLOCK_TIME_NONE;
+  self->seek_end_position = GST_CLOCK_TIME_NONE;
   self->seek_pending = TRUE;
   rate = self->rate;
   g_mutex_unlock (&self->lock);
@@ -3341,8 +3344,12 @@ gst_player_seek_internal_locked (GstPlayer * self)
   }
 
   if (rate >= 0.0) {
-    s_event = gst_event_new_seek (rate, GST_FORMAT_TIME, flags,
-        GST_SEEK_TYPE_SET, position, GST_SEEK_TYPE_NONE, GST_CLOCK_TIME_NONE);
+    if (end_position == GST_CLOCK_TIME_NONE)
+      s_event = gst_event_new_seek (rate, GST_FORMAT_TIME, flags,
+          GST_SEEK_TYPE_SET, position, GST_SEEK_TYPE_NONE, GST_CLOCK_TIME_NONE);
+    else
+      s_event = gst_event_new_seek (rate, GST_FORMAT_TIME, flags,
+          GST_SEEK_TYPE_SET, position, GST_SEEK_TYPE_SET, end_position);
   } else {
     s_event = gst_event_new_seek (rate, GST_FORMAT_TIME, flags,
         GST_SEEK_TYPE_SET, G_GINT64_CONSTANT (0), GST_SEEK_TYPE_SET, position);
@@ -3426,6 +3433,7 @@ gst_player_seek (GstPlayer * self, GstClockTime position)
     return;
   }
 
+  self->seek_end_position = GST_CLOCK_TIME_NONE;
   self->seek_position = position;
 
   /* If there is no seek being dispatch to the main context currently do that,
@@ -4757,4 +4765,77 @@ gst_player_get_video_snapshot (GstPlayer * self,
   }
 
   return sample;
+}
+gboolean
+gst_player_get_seek_range (GstPlayer * self, gint64 * segment_start,
+    gint64 * segment_end)
+{
+  GstQuery *query;
+  gboolean seekable = FALSE;
+  query = gst_query_new_seeking (GST_FORMAT_TIME);
+  if (gst_element_query (self->playbin, query))
+    gst_query_parse_seeking (query, NULL, &seekable, segment_start,
+        segment_end);
+  gst_query_unref (query);
+  return seekable;
+}
+
+void
+gst_player_seek_range (GstPlayer * self,
+    GstClockTime position, GstClockTime end_position)
+{
+  g_return_if_fail (GST_IS_PLAYER (self));
+  g_return_if_fail (GST_CLOCK_TIME_IS_VALID (position));
+
+  g_mutex_lock (&self->lock);
+  if (self->media_info && !self->media_info->seekable) {
+    GST_DEBUG_OBJECT (self, "Media is not seekable");
+    g_mutex_unlock (&self->lock);
+    return;
+  }
+
+  self->seek_end_position = end_position;
+  self->seek_position = position;
+
+  /* If there is no seek being dispatch to the main context currently do that,
+   * otherwise we just updated the seek position so that it will be taken by
+   * the seek handler from the main context instead of the old one.
+   */
+  if (!self->seek_source) {
+    GstClockTime now = gst_util_get_timestamp ();
+
+    /* If no seek is pending or it was started more than 250 mseconds ago seek
+     * immediately, otherwise wait until the 250 mseconds have passed */
+    if (!self->seek_pending || (now - self->last_seek_time > 250 * GST_MSECOND)) {
+      self->seek_source = g_idle_source_new ();
+      g_source_set_callback (self->seek_source,
+          (GSourceFunc) gst_player_seek_internal, self, NULL);
+      GST_TRACE_OBJECT (self, "Dispatching seek to position %" GST_TIME_FORMAT,
+          GST_TIME_ARGS (position));
+      g_source_attach (self->seek_source, self->context);
+    } else {
+      guint delay = 250000 - (now - self->last_seek_time) / 1000;
+
+      /* Note that last_seek_time must be set to something at this point and
+       * it must be smaller than 250 mseconds */
+      self->seek_source = g_timeout_source_new (delay);
+      g_source_set_callback (self->seek_source,
+          (GSourceFunc) gst_player_seek_internal, self, NULL);
+
+      GST_TRACE_OBJECT (self,
+          "Delaying seek to position %" GST_TIME_FORMAT " by %u us",
+          GST_TIME_ARGS (position), delay);
+      g_source_attach (self->seek_source, self->context);
+    }
+  }
+  g_mutex_unlock (&self->lock);
+}
+
+void
+gst_player_add_callback (GstPlayer * self, const gchar * name, GCallback cb,
+    gpointer ptr)
+{
+  gchar *signame = g_strdup_printf ("message::%s", name);
+  g_signal_connect (G_OBJECT (self->bus), signame, cb, ptr);
+  g_free (signame);
 }

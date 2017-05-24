@@ -315,6 +315,7 @@ typedef struct
 #define DEFAULT_LATENCY              0
 #define DEFAULT_START_TIME_SELECTION GST_AGGREGATOR_START_TIME_SELECTION_ZERO
 #define DEFAULT_START_TIME           (-1)
+#define DEFAULT_NON_LIVE FALSE
 
 enum
 {
@@ -322,6 +323,7 @@ enum
   PROP_LATENCY,
   PROP_START_TIME_SELECTION,
   PROP_START_TIME,
+  PROP_NON_LIVE,
   PROP_LAST
 };
 
@@ -1412,6 +1414,9 @@ gst_aggregator_query_latency_unlocked (GstAggregator * self, GstQuery * query)
     return FALSE;
   }
 
+  if (self->non_live)
+    live = FALSE;
+
   self->priv->peer_latency_live = live;
   self->priv->peer_latency_min = min;
   self->priv->peer_latency_max = max;
@@ -1908,6 +1913,9 @@ gst_aggregator_set_property (GObject * object, guint prop_id,
     case PROP_START_TIME:
       agg->priv->start_time = g_value_get_uint64 (value);
       break;
+    case PROP_NON_LIVE:
+      agg->non_live = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -1929,6 +1937,9 @@ gst_aggregator_get_property (GObject * object, guint prop_id,
       break;
     case PROP_START_TIME:
       g_value_set_uint64 (value, agg->priv->start_time);
+      break;
+    case PROP_NON_LIVE:
+      g_value_set_boolean (value, agg->non_live);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1992,6 +2003,11 @@ gst_aggregator_class_init (GstAggregatorClass * klass)
           G_MAXUINT64,
           DEFAULT_START_TIME, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_NON_LIVE,
+      g_param_spec_boolean ("non-live", "Non Live",
+          "Operate always as with a non-live source",
+          DEFAULT_NON_LIVE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   GST_DEBUG_REGISTER_FUNCPTR (gst_aggregator_stop_pad);
 }
 
@@ -2021,6 +2037,8 @@ gst_aggregator_init (GstAggregator * self, GstAggregatorClass * klass)
   self->priv->peer_latency_max = self->priv->sub_latency_max = 0;
   self->priv->has_peer_latency = FALSE;
   gst_aggregator_reset_flow_values (self);
+
+  self->non_live = DEFAULT_NON_LIVE;
 
   self->srcpad = gst_pad_new_from_template (pad_template, "src");
 

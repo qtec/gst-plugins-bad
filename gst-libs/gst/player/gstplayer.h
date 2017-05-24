@@ -204,6 +204,10 @@ guint          gst_player_config_get_position_update_interval  (const GstStructu
 
 void           gst_player_config_set_seek_accurate (GstPlayer * player, gboolean accurate);
 gboolean       gst_player_config_get_seek_accurate (const GstStructure * config);
+gboolean       gst_player_get_seek_range (GstPlayer * self, gint64 *segment_start, gint64 *segment_end);
+void           gst_player_seek_range (GstPlayer* self, GstClockTime position, GstClockTime end_position);
+void           gst_player_add_callback (GstPlayer* self, const gchar *name, GCallback cb, gpointer ptr);
+
 
 typedef enum
 {

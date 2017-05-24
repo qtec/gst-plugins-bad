@@ -5,6 +5,16 @@ libgstdashdemux_la_SOURCES =			\
 	gstmpdparser.c				\
 	gstdashdemux.c				\
 	gstisoff.c				\
+        gstdashsink.c				\
+        gstdashmanager.c			\
+        mpd/gstperiod.c				\
+        mpd/gstadaptationset.c			\
+        mpd/gstmediacommon.c			\
+        mpd/gstmediapresentation.c		\
+        mpd/gstrepresentation.c			\
+        mpd/gstsegmentlist.c			\
+        mpd/gstxmlhelper.c			\
+        mpd/gstsegmenttemplate.c \
 	gstplugin.c
 
 # headers we need but don't want installed
@@ -12,6 +22,15 @@ noinst_HEADERS =        \
         gstmpdparser.h	\
 	gstdashdemux.h	\
 	gstisoff.h	\
+        gstdashsink.h	\
+        gstdashmanager.h \
+        mpd/gstperiod.h	\
+        mpd/gstadaptationset.h \
+        mpd/gstmediacommon.h \
+        mpd/gstmediapresentation.h \
+        mpd/gstrepresentation.h \
+        mpd/gstsegmentlist.h \
+        mpd/gstxmlhelper.h \
 	gstdash_debug.h
 
 # compiler and linker flags used to compile this plugin, set in configure.ac
@@ -24,6 +43,7 @@ libgstdashdemux_la_CFLAGS = $(GST_PLUGINS_BAD_CFLAGS) \
 libgstdashdemux_la_LIBADD = \
 	$(top_builddir)/gst-libs/gst/uridownloader/libgsturidownloader-@GST_API_VERSION@.la \
 	$(top_builddir)/gst-libs/gst/adaptivedemux/libgstadaptivedemux-@GST_API_VERSION@.la \
+	$(top_builddir)/gst-libs/gst/baseadaptive/libgstbaseadaptive-$(GST_API_VERSION).la  \
 	$(GST_PLUGINS_BASE_LIBS) \
 	-lgsttag-$(GST_API_VERSION) \
 	$(GST_BASE_LIBS) \

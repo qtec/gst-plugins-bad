@@ -3590,6 +3590,7 @@ gst-libs/gst/video/Makefile
 gst-libs/gst/audio/Makefile
 gst-libs/gst/opencv/Makefile
 gst-libs/gst/allocators/Makefile
+gst-libs/gst/baseadaptive/Makefile
 sys/Makefile
 sys/dshowdecwrapper/Makefile
 sys/acmenc/Makefile

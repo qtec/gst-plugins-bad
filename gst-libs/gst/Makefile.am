@@ -15,7 +15,7 @@ OPENCV_DIR=opencv
 endif
 
 SUBDIRS = uridownloader adaptivedemux interfaces basecamerabinsrc codecparsers \
-	 insertbin mpegts base video audio player allocators $(GL_DIR) $(WAYLAND_DIR) \
+	 insertbin mpegts base video audio player baseadaptive allocators $(GL_DIR) $(WAYLAND_DIR) \
 	 $(OPENCV_DIR)
 
 noinst_HEADERS = gst-i18n-plugin.h gettext.h glib-compat-private.h
